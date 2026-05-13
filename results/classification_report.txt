@@ -1,0 +1,28 @@
+RAPORT KLASYFIKACJI - Kamień, Papier, Nożyce (k-NN)
+============================================================
+
+Najlepsze k: 5
+Metoda normalizacji: standard
+Podział: 80% trening / 20% test
+Liczba próbek: 2188 (train: 1750, test: 438)
+
+Accuracy:  0.9566
+Precision: 0.9562 (macro)
+Recall:    0.9561 (macro)
+F1-score:  0.9561 (macro)
+
+Raport klasyfikacji:
+              precision    recall  f1-score   support
+
+        rock       0.93      0.94      0.94       145
+       paper       0.94      0.93      0.94       143
+    scissors       0.99      0.99      0.99       150
+
+    accuracy                           0.96       438
+   macro avg       0.96      0.96      0.96       438
+weighted avg       0.96      0.96      0.96       438
+
+Macierz pomyłek:
+[[137   8   0]
+ [  9 133   1]
+ [  1   0 149]]
