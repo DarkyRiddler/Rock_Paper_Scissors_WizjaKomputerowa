@@ -322,11 +322,6 @@ def evaluate_rps(p_choice: str, ai_choice: str) -> str:
 # ---------------------------------------------------------------------------
 # Sidebar Configuration Panel
 # ---------------------------------------------------------------------------
-st.sidebar.image(
-    "https://images.unsplash.com/photo-1612196808214-b8e1d6145a8c?auto=format&fit=crop&w=400&q=80",
-    caption="Klasyfikator Wizji Komputerowej",
-    width="stretch",
-)
 
 st.sidebar.title("🛠️ Panel Kalibracji")
 
