@@ -176,6 +176,7 @@ def run_prediction_pipeline(
     hsv_range: HSVRange,
     morph_kernel_size: int,
     min_contour_area: float,
+    segmentation_mode: str = "hsv",
 ) -> Tuple[Optional[str], Optional[np.ndarray], np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
     """Runs the computer vision processing and k-NN classifier on the image.
 
@@ -189,6 +190,7 @@ def run_prediction_pipeline(
         hsv_range: Selected HSV background thresholds.
         morph_kernel_size: Size of morphology kernel.
         min_contour_area: Minimum area to keep a contour.
+        segmentation_mode: "hsv" for manual background removal or "skin" for skin segmentation.
 
     Returns:
         Tuple: (label, probabilities, binary_mask, main_contour, feature_vector)
@@ -221,11 +223,36 @@ def run_prediction_pipeline(
     # Resize cropped image to dataset size (300x200)
     resized_rgb = cv2.resize(cropped_rgb, (300, 200))
 
-    # 2. Image preprocessing (Gaussian blur + HSV thresholding)
-    bg_mask = preprocess_to_hsv_mask(resized_rgb, hsv_range, blur_kernel=(5, 5))
+    if segmentation_mode == "skin":
+        # Skin color segmentation using YCrCb + HSV combined rules
+        blurred = cv2.GaussianBlur(resized_rgb, (5, 5), 0)
+        resized_bgr = cv2.cvtColor(blurred, cv2.COLOR_RGB2BGR)
+        resized_ycrcb = cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2YCrCb)
+        
+        # Standard YCrCb bounds for human skin
+        lower_ycrcb = np.array([0, 133, 77], dtype=np.uint8)
+        upper_ycrcb = np.array([255, 173, 127], dtype=np.uint8)
+        ycrcb_mask = cv2.inRange(resized_ycrcb, lower_ycrcb, upper_ycrcb)
+        
+        # Standard HSV bounds for human skin
+        resized_hsv = cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2HSV)
+        lower_hsv1 = np.array([0, 15, 30], dtype=np.uint8)
+        upper_hsv1 = np.array([20, 170, 255], dtype=np.uint8)
+        mask_hsv1 = cv2.inRange(resized_hsv, lower_hsv1, upper_hsv1)
+        
+        lower_hsv2 = np.array([160, 15, 30], dtype=np.uint8)
+        upper_hsv2 = np.array([180, 170, 255], dtype=np.uint8)
+        mask_hsv2 = cv2.inRange(resized_hsv, lower_hsv2, upper_hsv2)
+        hsv_mask = cv2.bitwise_or(mask_hsv1, mask_hsv2)
+        
+        # Combine masks to filter out noise
+        hand_mask = cv2.bitwise_and(ycrcb_mask, hsv_mask)
+    else:
+        # 2. Image preprocessing (Gaussian blur + HSV thresholding)
+        bg_mask = preprocess_to_hsv_mask(resized_rgb, hsv_range, blur_kernel=(5, 5))
 
-    # 3. Mask Inversion (green backround is black, hand is white)
-    hand_mask = invert_mask(bg_mask)
+        # 3. Mask Inversion (green background is black, hand is white)
+        hand_mask = invert_mask(bg_mask)
 
     # 4. Clean up noise using Morphological Operations
     cleaned_mask = apply_morphology(hand_mask, kernel_size=morph_kernel_size)
@@ -303,14 +330,33 @@ st.sidebar.image(
 
 st.sidebar.title("🛠️ Panel Kalibracji")
 
-st.sidebar.write("Skonfiguruj parametry segmentacji, aby odizolować dłoń od tła.")
+st.sidebar.write("Skonfiguruj parametry segmentacji, aby odizolować dłoń.")
 
-# HSV Threshold Sliders
-st.sidebar.subheader("Zakres tła HSV")
-h_low, h_high = st.sidebar.slider("Odcień (Hue - tło)", 0, 179, (35, 85))
-s_low, s_high = st.sidebar.slider("Nasycenie (Saturation)", 0, 255, (50, 255))
-v_low, v_high = st.sidebar.slider("Jasność (Value)", 0, 255, (50, 255))
-hsv_config = HSVRange(lower=(h_low, s_low, v_low), upper=(h_high, s_high, v_high))
+# Tryb segmentacji
+st.sidebar.subheader("Tryb segmentacji")
+seg_mode_options = ["hsv", "skin"]
+seg_mode_translation = {
+    "hsv": "🟢 Kalibracja tła (HSV)",
+    "skin": "✋ Automatyczna detekcja skóry"
+}
+seg_mode = st.sidebar.radio(
+    "Wybierz tryb wykrywania dłoni",
+    options=seg_mode_options,
+    format_func=lambda x: seg_mode_translation.get(x, x),
+    label_visibility="collapsed"
+)
+
+hsv_config = None
+if seg_mode == "hsv":
+    # HSV Threshold Sliders
+    st.sidebar.subheader("Zakres tła HSV")
+    h_low, h_high = st.sidebar.slider("Odcień (Hue - tło)", 0, 179, (35, 85))
+    s_low, s_high = st.sidebar.slider("Nasycenie (Saturation)", 0, 255, (50, 255))
+    v_low, v_high = st.sidebar.slider("Jasność (Value)", 0, 255, (50, 255))
+    hsv_config = HSVRange(lower=(h_low, s_low, v_low), upper=(h_high, s_high, v_high))
+else:
+    # Default HSV config if skin is selected
+    hsv_config = HSVRange(lower=(35, 50, 50), upper=(85, 255, 255))
 
 # Morphological Operations Slider
 st.sidebar.subheader("Ustawienia morfologii")
@@ -410,7 +456,7 @@ with tab1:
         if img_bgr is not None:
             # Run the process pipeline
             label, probas, mask, contour, feat = run_prediction_pipeline(
-                img_rgb, model, scaler, hsv_config, morph_size, min_area
+                img_rgb, model, scaler, hsv_config, morph_size, min_area, segmentation_mode=seg_mode
             )
 
             if label is not None and probas is not None and feat is not None:
@@ -454,11 +500,18 @@ with tab1:
                     "<div class='result-card result-none'>❌ NIE WYKRYTO DŁONI</div>",
                     unsafe_allow_html=True,
                 )
-                st.warning(
-                    "Algorytm segmentacji nie mógł zidentyfikować poprawnego konturu dłoni. "
-                    "Dostosuj suwaki w Panelu Kalibracji (Odcień, Nasycenie, Jasność), "
-                    "aby dopasować je do oświetlenia i tła."
-                )
+                if seg_mode == "hsv":
+                    st.warning(
+                        "Algorytm segmentacji nie mógł zidentyfikować poprawnego konturu dłoni. "
+                        "Dostosuj suwaki w Panelu Kalibracji (Odcień, Nasycenie, Jasność), "
+                        "aby dopasować je do oświetlenia i tła."
+                    )
+                else:
+                    st.warning(
+                        "Algorytm segmentacji skóry nie mógł zidentyfikować poprawnego konturu dłoni. "
+                        "Upewnij się, że dłoń jest dobrze oświetlona i kontrastuje z tłem, "
+                        "a w kadrze nie ma innych obiektów o kolorze skóry."
+                    )
         else:
             st.info("Zrób zdjęcie lub prześlij obraz, aby rozpocząć klasyfikację.")
 
@@ -511,11 +564,18 @@ with tab1:
                 st.image(mask, caption="Przetworzona maska binarna", clamp=True, width="stretch")
             with col_v2_desc:
                 st.write("### Etapy 2 i 3: Segmentacja i morfologia")
-                st.write(
-                    "Najpierw system konwertuje obraz do przestrzeni barw HSV i maskuje tło "
-                    "na podstawie ustawionego zakresu HSV. Następnie stosowane są operacje "
-                    "morfologiczne w celu usunięcia szumów:"
-                )
+                if seg_mode == "hsv":
+                    st.write(
+                        "Najpierw system konwertuje obraz do przestrzeni barw HSV i maskuje tło "
+                        "na podstawie ustawionego zakresu HSV. Następnie stosowane są operacje "
+                        "morfologiczne w celu usunięcia szumów:"
+                    )
+                else:
+                    st.write(
+                        "Najpierw system wykrywa piksele reprezentujące kolor skóry przy użyciu połączonych reguł "
+                        "w przestrzeniach barw YCrCb oraz HSV, eliminując tło bez ręcznej kalibracji. "
+                        "Następnie stosowane są operacje morfologiczne w celu usunięcia szumów:"
+                    )
                 st.write(
                     f"1. **Erozja i dylacja** do eliminacji małych pojedynczych białych punktów.\n"
                     f"2. **Zamknięcie i otwarcie** (Closing & Opening) z eliptycznym jądrem o rozmiarze "
@@ -534,7 +594,6 @@ with tab1:
                     "hu_0": "Hu moment 0", "hu_1": "Hu moment 1", "hu_2": "Hu moment 2",
                     "hu_3": "Hu moment 3", "hu_4": "Hu moment 4", "hu_5": "Hu moment 5",
                     "hu_6": "Hu moment 6",
-                    "area": "Pole powierzchni (Area)",
                     "perimeter": "Obwód (Perimeter)",
                     "aspect_ratio": "Proporcje (Aspect Ratio)",
                     "convexity": "Wypukłość (Convexity)",
@@ -555,7 +614,7 @@ with tab1:
                     st.write("**Deskryptory geometryczne i kształtu**")
                     st.write("Dodatkowe cechy opisujące fizyczne wymiary i proporcje obrysu dłoni.")
                     geom_keys = [
-                        "Pole powierzchni (Area)", "Obwód (Perimeter)", 
+                        "Obwód (Perimeter)", 
                         "Proporcje (Aspect Ratio)", "Wypukłość (Convexity)", "Okrągłość (Circularity)"
                     ]
                     geom_data = {k: features_dict[k] for k in geom_keys}
@@ -600,14 +659,17 @@ with tab2:
 
             # Predict player gesture
             label, probas, _, _, _ = run_prediction_pipeline(
-                player_image_rgb, model, scaler, hsv_config, morph_size, min_area
+                player_image_rgb, model, scaler, hsv_config, morph_size, min_area, segmentation_mode=seg_mode
             )
             player_gesture = label
 
             if player_gesture:
                 st.success(f"Wykryto: {get_gesture_emoji(player_gesture)}")
             else:
-                st.error("Nie wykryto dłoni. Dostosuj suwaki w panelu bocznym.")
+                if seg_mode == "hsv":
+                    st.error("Nie wykryto dłoni. Dostosuj suwaki w panelu bocznym.")
+                else:
+                    st.error("Nie wykryto dłoni. Upewnij się, że dłoń jest dobrze oświetlona i znajduje się na jednolitym tle.")
 
     with col_game_ai:
         st.subheader("Dłoń AI")
